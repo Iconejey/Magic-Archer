@@ -1,16 +1,16 @@
-import pygame as pg, os
-from ctypes import windll
+import pygame as pg, os, platform
 from entites import Player, Bullet
 from random import randint, random
 from math import sin
-
+	
 
 def between(a: int, b: int, c: int, /):
 	"""Return b such as a < b < c."""
 	return max(a, min(b, c))
 
 
-def getImgBank(path):
+def getImgBank(path: str) -> dict:
+	"""Return a dict containing all images in a folder with recursion."""
 	d = {}
 	for f in os.listdir(path):
 		if len(f) > 4 and f[-4:] in ('.png', 'jpg'):
@@ -21,9 +21,12 @@ def getImgBank(path):
 
 
 if __name__ == "__main__":
+	if 'Windows' in platform.platform(): # car pb de dpi sur windows
+		from ctypes import windll
+		windll.shcore.SetProcessDpiAwareness(1)
+
 	pg.init()
 	os.system('cls')
-	windll.shcore.SetProcessDpiAwareness(1)
 
 	img_bank = getImgBank('img')
 	player = Player([randint(20, 60) for i in range(2)], img_bank['player'])
