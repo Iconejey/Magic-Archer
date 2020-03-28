@@ -1,16 +1,27 @@
 import pygame as pg
 from math import atan2, pi
+from random import random, randint
 
 
-class Player:
-	"""Class for the player with animation."""
-	def __init__(self, pos: list, img_bank: dict):
-		self.pos = [0, 0]
+class Human:
+	"""Class for Humans with animation."""
+
+	def __init__(self, pos: list, img_bank: dict, anim_rate: int = 5):
+		self.pos = pos
 		self.img_bank = img_bank
+		self.anim_rate = anim_rate
 		self.orientation = 0
 		self.sight = [0, 1]
 		self.shoot_frame = 0
 		self.movement = 'run'
+		self.health = 10
+		self.hitbox = 12, 9, 6, 13
+
+
+	def getRect(self) -> pg.Rect:
+		px, py = self.pos
+		hx, hy, hw, hh = self.hitbox
+		return pg.Rect(px+hx, py+hy, hw, hh)
 
 
 	def move(self, dx: int, dy: int):
@@ -21,62 +32,82 @@ class Player:
 			self.movement = 'stay'
 		else:
 			self.sight = [dx, dy]
-			self.orientation = int((atan2(dx, dy)/pi*4)%8)
+			self.orientation = int((atan2(dx, dy)/pi*4) % 8)
 			self.movement = 'run'
 
 
-	def getCenter(self) -> tuple:
+	def getCenter(self) -> list:
 		"""Return player center."""
 		return [v + 16 for v in self.pos]
 
 
-	def show(self, s: pg.Surface, frame: int):
+	def show(self, s: pg.Surface, frame: int, blood: bool = False):
 		"""Blit player on given pygame Surface."""
 		o, m = self.orientation, self.movement
-		n = 0 if m == 'stay' else (frame//3) % 6
-		s.blit(self.img_bank[m][f'{o}_{n}'], self.pos)
+		n = 0 if m == 'stay' else (frame//self.anim_rate) % 6
+		img = self.img_bank[m][f'{o}_{n}'].copy()
+		if blood:
+			r = range(30)
+			for y in r:
+				for x in r:
+					if img.get_at([x, y])[3] > 200:
+						img.set_at([x, y], [randint(192, 255), 0, 0, 255])
+					else:
+						img.set_at([x, y], [0]*4)
+		s.blit(img, self.pos)
 
 
-	def shoot(self, frame):
-		"""Return a new Bullet in the direction the player looks at if the last Bullet was shot at least 20 frames ago."""
+	def shoot(self, frame: int):
+		"""Return a new Bullet in the direction the player looks at if 20 frames passed since last hit or shot."""
 		if frame - self.shoot_frame >= 20:
 			self.shoot_frame = frame
-			return Bullet(self.getCenter(), self.sight)
+			return Particle(self.getCenter(), self.sight)
 
 
+	def hit(self, other, frame: int):
+		"""Hit another Humman if 20 frames passed since last hit or shot with some random."""
+		if frame - self.shoot_frame >= 20:
+			self.shoot_frame = frame
+			other.health -= 1
 
-class Bullet:
-	"""Class for the Bullets that the player shoots."""
+
+class Particle:
+	"""Class for the particles of bloob and bullets."""
+
 	@staticmethod
 	def mag(x: int, y: int) -> float:
 		"""Return magnitude of the vector (x, y)."""
 		return (x**2 + y**2)**.5
-	
-	
-	def __init__(self, pos: list, vel: list):
+
+
+	def __init__(self, pos: list, vel: list, trace: int = 2, slow: float = .99):
 		self.pos = pos
-		self.vel = [v/Bullet.mag(*vel)*2 for v in vel]
-		self.trace = [self.intPos() for i in range(2)]
+		self.vel = [v/Particle.mag(*vel)*2 for v in vel]
+		self.trace = [self.intPos() for i in range(trace)]
+		self.slow = slow
 
 
 	def __str__(self):
-		return f'Bullet({self.pos}, {self.vel})'
+		return f'Particle({self.pos}, {self.vel})'
 
-	
+
 	def move(self):
-		"""Move the Bullet."""
+		"""Move the particle."""
 		for i in [0, 1]:
 			self.pos[i] += self.vel[i]
-			self.vel[i] *= 0.99
+			self.vel[i] *= self.slow
 		self.trace.pop(0)
 		self.trace.append(self.intPos())
 
 
 	def intPos(self) -> list:
-		"""Return Bullet position with integers."""
+		"""Return particle position with integers."""
 		return [int(v) for v in self.pos]
 
 
-	def show(self, s: pg.Surface):
-		"""Draw Bullet on a given pygame Surface."""
-		pg.draw.lines(s, [255]*3, False, self.trace, 2)
+	def show(self, s: pg.Surface, size: int = 1, color = [255, 255, 255], circle = False):
+		"""Draw particle on a given pygame Surface."""
+		if circle:
+			pg.draw.circle(s, color, self.trace[-1], size//2)
+		else:
+			pg.draw.lines(s, color, False, self.trace, size)
