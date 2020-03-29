@@ -1,12 +1,7 @@
 import pygame as pg, os, platform
-from entites import Human, Particle
+from entites import Entity, Animated, Particle, mag, vecSub, between
 from random import randint, random, choice
 from math import sin
-
-
-def between(a: int, b: int, c: int, /) -> int:
-	"""Return b such as a <= b <= c."""
-	return max(a, min(b, c))
 
 
 def getImgBank(path: str) -> dict:
@@ -20,35 +15,79 @@ def getImgBank(path: str) -> dict:
 	return d
 
 
+def gradiant(s: pg.surface, color: list, rand: float, player_pos: list, fog: bool = None):
+	"""Set random pixels of given surface to given RGBA color."""
+	w, h = s.get_size()
+	sx, sy = surface_pos
+
+	if player is not None:
+		px, py = player.intPos()
+	else:
+		px, py = 0, 0
+	
+	border = 20
+	rx = max(0, int(-sx//SCALE) - border), min(int((-sx+SCREEN_W)//SCALE) + border, SURFACE_W)
+	ry = max(0, int(-sy//SCALE) - border), min(int((-sy+SCREEN_H)//SCALE) + border, SURFACE_H)
+
+	for y in range(*ry):
+		for x in range(*rx):
+			if random() > rand:
+				if fog:
+					fx, fy = vecSub((x-16, y-16), (px, py))
+					intensity = int(fx*fx + fy*fy)
+					color[-1] = randint(between(0, intensity - 64, 255), between(0, intensity, 255))
+				s.set_at([x, y], color)
+	return s
+
+
+def getSurfacePos(player: Animated, mouse: tuple) -> tuple:
+	"""Return position of surface so that the view is aligned with player."""
+	if player is None: return 0, 0
+	px, py = player.pos
+	mx, my = mouse
+	x = between(-SURFACE_W*SCALE + SCREEN_W, (-px-16)*SCALE + SCREEN_W//2 - mx//10, 0)
+	y = between(-SURFACE_H*SCALE + SCREEN_H, (-py-16)*SCALE + SCREEN_H//2 - my//10, 0)
+	return x, y
+
+
 if __name__ == "__main__":
 	if 'Windows' in platform.platform():  # car pb de dpi sur windows
 		from ctypes import windll
 		windll.shcore.SetProcessDpiAwareness(1)
 
 	pg.init()
-	os.system('cls')
 
-	SIZE = 960, 576
-	SCREEN = pg.display.set_mode(SIZE)
-
+	SCREEN_SIZE = SCREEN_W, SCREEN_H = 1200, 720
+	SCREEN = pg.display.set_mode(SCREEN_SIZE)
 	img_bank = getImgBank('img')
-	player = Human([randint(20, 60) for i in range(2)], img_bank['player'])
-	zombies = []
-	bullets, blood = [], []
-
-	SURFACE = pg.Surface([120, 120])
-	SEFFECT = pg.Surface([120, 120])
-	SEFFECT.set_colorkey([0]*3)
+	SURFACE_SIZE = SURFACE_W, SURFACE_H = img_bank['ground'].get_size()
+	SURFACE = pg.Surface(SURFACE_SIZE).convert_alpha()
+	SEFFECT = SURFACE.copy()
+	SCALE = 8
 
 	clock = pg.time.Clock()
-
 	bold_font = pg.font.Font(f"Consolas.ttf", 24)
 	bold_font.set_bold(True)
+	mouse_drag = None
+	fog_frame = 0
+	score = 0
+
+	player = None
+	bullets, blood_particles = [], []
+	zombies = []
+
+	static_entities = [
+		Entity([23, 86], img_bank['house1'], [0, 28, 59, 23], [0, 21, 59, 23], 51),
+		Entity([199, 81], img_bank['house2'], [0, 20, 50, 24], [0, 13, 50, 24], 44),
+		Entity([249, 132], img_bank['house3'], [0, 27, 42, 24], [0, 20, 42, 24], 51),
+		Entity([362, 41], img_bank['pine'], [29, 108, 5, 5], [29, 94, 5, 11], 112)
+	]
+
+	os.system('cls')
 
 	frame = 0
 	game_state = 'menu'
 	while game_state != 'end':
-		print(player.health, end = ' \r')
 		frame += 1
 		clock.tick(48)
 
@@ -57,103 +96,137 @@ if __name__ == "__main__":
 			continue
 
 		keys = pg.key.get_pressed()
+		click = any(pg.mouse.get_pressed())
+		mouse_pos = pg.mouse.get_pos()
+		mouse_from_center = vecSub(mouse_pos, [SCREEN_W//2, SCREEN_H//2])
 
-		SCREEN.fill([0]*3)
-
-		blink = abs(int(sin(frame/5)*255))
+		surface_pos = getSurfacePos(player, mouse_from_center)
 
 		if game_state == 'menu':
-			SCREEN.blit(bold_font.render("> press [Enter] to start.", False, [blink]*3), [10, 16])
+			SEFFECT = gradiant(SEFFECT, [0, 0, 0, 255], .8, player)
+			SURFACE.blit(SEFFECT, [0, 0])
+			SCREEN.blit(pg.transform.scale(SURFACE, [SURFACE_W*SCALE, SURFACE_H*SCALE]), surface_pos)
+			# SCREEN.blit(bold_font.render("> press [Enter] to start.", False, [255, 255, 255, blink]), [10, 16])
+			
 			if keys[pg.K_RETURN]:
 				game_state = 'play'
+				player = Animated([randint(0, v) for v in SURFACE_SIZE], img_bank['player'], [12, 22, 6, 3], [12, 9, 6, 13], 24, health = 10, anim_len = 6, anim_rate = 16)
+				bullets, blood_particles = [], []
+				zombies = []
+				score = 0
+				SEFFECT.fill([0, 0, 0, 255])
+
 
 		if game_state == 'play':
-			# logic
-			if frame == 0 or frame%48 == 0 and random() >= 0.75:
-				zombies.append(Human([randint(0, 120) for i in range(2)], img_bank['zombie'], 10))
+			SEFFECT = gradiant(SEFFECT, [0]*4, .8, player, fog = False if frame > fog_frame else True)
+			
+			print(int(clock.get_fps()), player.health, score, end = ' \r')
+			
+			if player.health <= 0:
+				game_state = 'menu'
+			
+			if random() >= .99 or len(zombies) == 0:
+				zombies.append(Animated([randint(0, v) for v in SURFACE_SIZE], img_bank['zombie'], [12, 22, 6, 3], [11, 9, 8, 13], 24, health = 10, anim_len = 6, anim_rate = 12))
 
-			for zom in zombies:
-				dx, dy = [b-a for a, b in zip(zom.pos, player.pos)]
-				mag = 4*(dx**2 + dy**2)**.5
-				if mag > 32:
-					dx /= mag
-					dy /= mag
-					zom.move(dx, dy)
+			for zombie in zombies:
+				dx, dy = vecSub(player.pos, zombie.pos)
+				if dx**2 + dy**2 > 144:
+					m = mag(dx, dy)
+					zombie.move(dx/m/2, dy/m/2)
+					for entity in static_entities:
+						collision = zombie.collide(entity)
+						if collision is not None:
+							dx, dy = collision
+
+							if dx < dy:
+								zombie.pos[0] -= dx
+							else:
+								zombie.pos[1] -= dy
 				else:
-					zom.move(0, 0)
-					if random() > .9:
-						zom.hit(player, frame)
+					zombie.move(0, 0)
+					if random() > .9 and zombie.hit(player, frame):
+						fog_frame = frame + randint(96, 128)
 						player.show(SEFFECT, frame, blood = True)
 
-				if zom.health <= 0:
-					zom.show(SEFFECT, frame, blood = True)
-					zombies.remove(zom)
+				if zombie.health <= 0:
+					zombie.show(SEFFECT, frame, blood = True)
+					zombies.remove(zombie)
+					score += 1
 
 			direction = [0, 0]
 			if keys[pg.K_w]: direction[1] -= 1
 			if keys[pg.K_s]: direction[1] += 1
 			if keys[pg.K_a]: direction[0] -= 1
 			if keys[pg.K_d]: direction[0] += 1
-			player.move(*direction)
-			x, y = player.pos
-			player.pos = [between(-11, x, 101), between(-8, y, 96)]
 
-			if keys[pg.K_SPACE]:
-				if (b:=player.shoot(frame)) is not None:
+			dx, dy = direction
+			if abs(dx) != abs(dy):
+				dx *= 1.4
+				dy *= 1.4
+			
+			player.move(dx, dy)
+
+			if player.movement == 'run':
+				for entity in static_entities:
+					collision = player.collide(entity)
+					if collision is not None:
+						dx, dy = collision
+
+						if dx < dy:
+							player.pos[0] -= dx
+						else:
+							player.pos[1] -= dy
+
+			player.pos = [between(-11, player.pos[0], SURFACE_W-19), between(-8, player.pos[1], SURFACE_H-24)]
+
+			if click:
+				if (b:=player.shoot(mouse_from_center, frame)) is not None:
 					bullets.append(b)
 
-			for y in range(120):
-				for x in range(120):
-					if random() >= .8:
-						SEFFECT.set_at([x, y], [0]*3)
+			for bullet in bullets:
+				bullet.move(SURFACE_SIZE)
+				bullet.show(SEFFECT, color = [255, 255, 192])
 
-			for bul in bullets:
-				bul.move()
-				x, y = bul.pos
-
-				if x < 0: bul.vel[0] = abs(bul.vel[0])
-				if y < 0: bul.vel[1] = abs(bul.vel[1])
-				if x > 120: bul.vel[0] = -abs(bul.vel[0])
-				if y > 120: bul.vel[1] = -abs(bul.vel[1])
-
-				bul.pos = [between(0, v, 120) for v in bul.pos]
-
-				bul.show(SEFFECT, color = [255, 255, 192])
-
-				rem = False
-
-				for zom in zombies:
-					if zom.getRect().collidepoint(*bul.intPos()):
-						zom.health -= 2
-						rem = True
+				for zombie in zombies:
+					if bullet.collide(zombie):
+						zombie.health -= sum(v**2/10 for v in bullet.vel)
+						bullet.vel = [v*.8 for v in bullet.vel]
 						for i in range(randint(2, 5)):
-							blood.append(Particle(bul.intPos(), [v+random()*2-1 for v in bul.vel], slow = .85))
+							blood_particles.append(Particle(bullet.intPos(), [v+random()*2-1 for v in bullet.vel], slow = .85, dead_vel = .4))
 
-				if Particle.mag(*bul.vel) <= 0.5:
-					rem = True
-					
-				if rem: bullets.remove(bul)
+				for entity in static_entities:
+					if bullet.collide(entity):
+						bullet.vel = [0, 0]
 
-			for blo in blood:
-				blo.move()
-				blo.show(SEFFECT, color = [randint(192, 255), 0, 0, randint(64, 255)])
+				if bullet.dead():
+					bullets.remove(bullet)
+
+
+			for part in blood_particles:
+				part.move(SURFACE_SIZE)
+				part.show(SEFFECT, color = [randint(192, 255), 0, 0, randint(64, 255)])
 				
-				if Particle.mag(*blo.vel) <= 0.5:
-					blood.remove(blo)
+				if part.dead():
+					blood_particles.remove(part)
 
 			# graphics
-			h = int(SIZE[1]//16 - player.getCenter()[1])
-			h = between(-48, h, 0)
+			SURFACE.blit(img_bank['ground'], [0, 0])
 
-			SURFACE.blit(img_bank['bg'], [0, 0])
+			for entity in Entity.order([*zombies, player, *static_entities]):
+				if type(entity) is Animated:
+					entity.show(SURFACE, frame)
+				else:
+					entity.show(SURFACE)
 
-			dist_dict = {tuple(reversed(h.pos)): h for h in zombies + [player]}
-			for k in sorted(dist_dict):
-				dist_dict[k].show(SURFACE, frame)
+			traj = player.shoot(mouse_from_center, frame, no_latence = True).getTraject(SURFACE_SIZE)
+			for x, y in list(traj)[::2]:
+				x, y = between(0, x, SURFACE_W-1), between(0, y, SURFACE_H-1)
+				SURFACE.set_at([x, y], [int(c*.8) for c in SURFACE.get_at([x, y])])
 
-			SURFACE.blit(img_bank['bg_tree'], [0, 0])
+			SURFACE.blit(img_bank['tree_fg'], [12, 0])
 			SURFACE.blit(SEFFECT, [0, 0])
 
-			SCREEN.blit(pg.transform.scale(SURFACE, [SIZE[0]]*2), [0, h*8])
+			
+			SCREEN.blit(pg.transform.scale(SURFACE, [SURFACE_W*SCALE, SURFACE_H*SCALE]), surface_pos)
 
 		pg.display.update()
