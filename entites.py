@@ -76,11 +76,11 @@ class Entity:
 			px, py, pw, ph = self.getRelative(self.ground_hitbox)
 			ox, oy, ow, oh = other.getRelative(other.ground_hitbox)
 
-			if dcx > 0: dx = px + pw - ox
-			else: dx = px - ox - ow
+			if dcx > 0: dx = (px + pw) - ox
+			else: dx = px - (ox + ow)
 
-			if dcy > 0: dy = py + ph - oy
-			else: dy = py - oy - oh
+			if dcy > 0: dy = (py + ph) - oy
+			else: dy = py - (oy + oh)
 
 			return dx, dy
 
@@ -130,7 +130,7 @@ class Moving(Entity):
 				if collision is not None:
 					dx, dy = collision
 
-					if dx < dy:
+					if abs(dx) < abs(dy):
 						self.pos[0] -= dx
 					else:
 						self.pos[1] -= dy
@@ -149,7 +149,9 @@ class Moving(Entity):
 		for y in range(h):
 			for x in range(w):
 				if img.get_at([x, y])[3] > 200:
-					img.set_at([x, y], [randint(192, 255), 0, 0, randint(128, 255)])
+					r = randint(192, 255)
+					gb = randint(0, 96)
+					img.set_at([x, y], [r, gb, gb, 255])
 				else:
 					img.set_at([x, y], [0]*4)
 		return img
@@ -226,52 +228,64 @@ class Zombie(Human):
 		super(Zombie, self).__init__(pos, 10, img_bank, anim_rate = 12)
 
 
-	def hit(self, other: Human, frame: int) -> bool:
+	def spit(self, other: Human, frame: int) -> bool:
 		"""Hit another Humman if 5 frames passed since last hit. Return True if hit, else False"""
 		if frame - self.hit_frame >= 5:
 			self.hit_frame = frame
-			other.health -= 1
-			return True
+			vx, vy = vecSub(other.pos, self.pos)
+			x, y = self.pos
+			m = mag(vx, vy)
+			for i in range(randint(3, 6)):
+				yield Particle([x+15, y+14], [5*vx/m+random()*2-1, 5*vy/m+random()*2-1], _type = 'spit')
+
 
 
 
 class Player(Human):
 	def __init__(self, pos: list, img_bank: dict):
 		super(Player, self).__init__(pos, 10, img_bank, anim_rate = 16)
-		self.ammo = [8, 0]
+		self.ammo = [32, 1]
 
 
-	def shoot(self, sight: tuple, frame: int, no_latence: bool = False):
-		"""Return a new Bullet in the direction the entity looks at if 20 frames passed since last hit or shot."""
-		hit = frame - self.hit_frame >= 15
-		if (hit or no_latence) and sight != (0, 0):
-			if not no_latence: self.hit_frame = frame
+	def shoot(self, sight: tuple, _type):
+		"""Return a new arrow in the direction the entity looks zq"""
+		if sight != (0, 0):
 			x, y = self.pos
 			vx, vy = sight
 			m = mag(vx, vy)
-			return Particle([x+16, y+16], [vx/m*8, vy/m*8], slow = .9, dead_vel = 1)
+			return Particle([x+15, y+15], [vx/m*8, vy/m*8], _type = _type)
 
 
 
 class Particle:
 	"""Class for the particles of bloob and bullets."""
 
-	def __init__(self, pos: list, vel: list, trace: int = 2, slow: float = .99, dead_vel: float = 1, entity_from: Entity = None, creation_frame: int = 0):
+	def __init__(self, pos: list, vel: list, _type: str = 'arrow', trace: int = 2, victims: list = None):
 		self.pos, self.vel = pos, vel
+		self.type = _type
 		self.trace = [self.intPos() for i in range(trace)]
-		self.slow, self.dead_vel = slow, dead_vel
-		self.explosive = False
-		self.entity_from = entity_from
-		self.creation_frame = creation_frame
+		self.slow = {'arrow': .9, 'magic': .8, 'blood': .7, 'spit': .8}[self.type]
+		self.dead_vel = {'arrow': 1, 'magic': .000000001, 'blood': 1, 'spit': 2}[self.type]
+		self.victims = [] if victims is None else victims
 
 
-	def __str__(self):
-		"""String representation of entity."""
+	def __str__(self) -> str:
+		"""String representation of particle."""
 		return f'Particle({self.pos}, {self.vel})'
 
 
-	def move(self, borders: tuple):
+	def move(self, borders: tuple, targets: list, to_avoid: list):
 		"""Move and bounce the particle."""
+		if self.type == 'magic':
+			d = {mag(*vecSub(e.getCenter(e.bullet_hitbox), self.pos)): e for e in targets if e not in self.victims}
+			if len(d) and len(self.victims) < 16 and min(d) < 50 and not (self.collide(d[min(d)]) or any(self.collide(e) for e in to_avoid)):
+				v, n = min(d), d[min(d)]
+				dx, dy = vecSub(n.getCenter(n.bullet_hitbox), self.pos)
+				vx, vy = self.vel
+				self.vel = [vx+dx/v, vy+dy/v]
+			else:
+				self.vel = [0, 0]
+		
 		for i in [0, 1]:
 			self.pos[i] += self.vel[i]
 			self.vel[i] *= self.slow
@@ -290,13 +304,15 @@ class Particle:
 		self.trace.append(self.intPos())
 
 
-	def dead(self):
-		return mag(*self.vel) <= self.dead_vel
+	def dead(self) -> bool:
+		"""Return True is particle velocity is below dead_vel."""
+		return mag(*self.vel) < self.dead_vel
 
 
-	def getTraject(self, borders: tuple):
+	def getTraject(self, borders: tuple, targets: list, to_avoid: list):
+		"""Return the trajectory of the particle."""
 		while not self.dead():
-			self.move(borders)
+			self.move(borders, targets, to_avoid)
 			yield self.intPos()
 
 
@@ -305,23 +321,38 @@ class Particle:
 		return [int(v) for v in self.pos]
 
 
-	def collide(self, entity: Entity, frame: int = None) -> bool:
+	def collide(self, entity: Entity) -> bool:
 		"""return True if particle collides entity."""
-		return entity is not self.entity_from and (frame is None or frame > self.creation_frame + 5) and entity.getRect(entity.bullet_hitbox).collidepoint(*self.intPos())
+		if not entity in self.victims and entity.getRect(entity.bullet_hitbox).collidepoint(*self.intPos()):
+			self.victims.append(entity)
+			return True
+		return False
 
 
-	def show(self, s: pg.Surface, size: int = 1, color = [255, 255, 255]):
+	def bounce(self, entities: list):
+		"""Creates a new particle wich goes toward nearest entity and kills the mother particle."""
+		d = {mag(*vecSub(e.getCenter(e.bullet_hitbox), self.pos)): e for e in entities if e not in self.victims}
+		if len(d) and len(self.victims) < 16:
+			v, n = min(d), d[min(d)]
+			dx, dy = vecSub(n.getCenter(n.bullet_hitbox), self.pos)
+			speed = 3
+			part = Particle(self.pos, [dx/v*speed, dy/v*speed], _type = self.type, victims = self.victims)
+			self.vel = [0, 0]
+			return part
+
+
+	def show(self, s: pg.Surface, size: int = 1, color = [255, 255, 255, 255]):
 		"""Draw particle on a given pygame Surface."""
 		pg.draw.lines(s, color, False, self.trace, size)
 
 
 
-def mag(x: int, y: int) -> float:
+def mag(x: int, y: int, /) -> float:
 	"""Return magnitude of the vector (x, y)."""
 	return (x**2 + y**2)**.5
 
 
-def vecSub(v1: list, v2: list) -> tuple:
+def vecSub(v1: list, v2: list, /) -> tuple:
 	"""Return v1 - v2"""
 	(x1, y1), (x2, y2) = v1, v2
 	return x1-x2, y1-y2

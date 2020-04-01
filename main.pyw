@@ -17,7 +17,6 @@ def getImgBank(path: str) -> dict:
 
 def gradiant(s: pg.surface, color: list, rand: float, player: Player, fog: bool = None):
 	"""Set random pixels of given surface to given RGBA color."""
-	w, h = s.get_size()
 	sx, sy = surface_pos
 
 	if player is not None:
@@ -45,20 +44,16 @@ def getSurfacePos(player: Player, mouse: tuple) -> tuple:
 	if player is None: return 0, 0
 	px, py = player.pos
 	mx, my = mouse
-	x = between(-SURFACE_W*SCALE + SCREEN_W, (-px-16)*SCALE + SCREEN_W//2 - mx//10, 0)
-	y = between(-SURFACE_H*SCALE + SCREEN_H, (-py-16)*SCALE + SCREEN_H//2 - my//10, 0)
+	x = between(-SURFACE_W*SCALE + SCREEN_W, (-px-16)*SCALE + SCREEN_W//2 - mx//5, 0)
+	y = between(-SURFACE_H*SCALE + SCREEN_H, (-py-16)*SCALE + SCREEN_H//2 - my//5, 0)
 	return x, y
 
 
-def explosion(pos: list, entity_from: Entity, frame: int):
-	if len(bullets) < 256:
-		d = {mag(*vecSub(e.getCenter(e.bullet_hitbox), pos)): e for e in [*zombies, *sheeps] if e is not entity_from}
-		v, n = min(d), d[min(d)]
-		dx, dy = vecSub(n.getCenter(n.bullet_hitbox), pos)
-		speed = 3
-		part = Particle(bullet.pos, [dx/v*speed, dy/v*speed], slow = .94, dead_vel = 1, entity_from = entity_from, creation_frame = frame)
-		part.explosive = True
-		bullets.append(part)
+def dropAmmo(entity: Entity):	
+	for i in range(randint(2, 8)):
+		ex, ey = entity.intPos()
+		ammo.append(Entity([ex + random()*16, ey + random()*16], img_bank[f'ammo{randint(1, 3)}'], None, None, 4))
+
 
 
 if __name__ == "__main__":
@@ -80,13 +75,13 @@ if __name__ == "__main__":
 	bold_font = pg.font.Font(f"Consolas.ttf", 24)
 	bold_font.set_bold(True)
 	mouse_drag = None
-	explosive = False
+	magic = False
 	fog_frame = 0
 	score = 0
 	traj = None
 
 	player = None
-	bullets, blood_particles = [], []
+	particles = []
 	zombies = []
 	sheeps = []
 	ammo = []
@@ -105,7 +100,7 @@ if __name__ == "__main__":
 	game_state = 'menu'
 	while game_state != 'end':
 		frame += 1
-		clock.tick(48)
+		clock.tick(24)
 
 		if any(e.type == pg.QUIT for e in pg.event.get()):
 			game_state = 'end'
@@ -131,12 +126,12 @@ if __name__ == "__main__":
 			if keys[pg.K_RETURN]:
 				game_state = 'play'
 				player = Player([randint(0, SURFACE_W), randint(0, SURFACE_H)], img_bank['player'])
-				bullets, blood_particles = [], []
+				particles = []
 				zombies = []
 				sheeps = []
 				ammo = []
 				score = 0
-				fog_frame = 64
+				fog_frame = 0
 				SEFFECT.fill([0, 0, 0, 255])
 
 
@@ -144,7 +139,6 @@ if __name__ == "__main__":
 			SEFFECT = gradiant(SEFFECT, [0]*4, .8, player, fog = False if frame > fog_frame else True)
 			
 			print(int(clock.get_fps()), player.health, score, end = ' \r')
-			
 
 			if player.health <= 0:
 				game_state = 'menu'
@@ -158,18 +152,31 @@ if __name__ == "__main__":
 
 
 			for zombie in zombies:
+				for other in zombies:
+					if other is not zombie:
+						odx, ody = vecSub(zombie.pos, other.pos)
+						if odx**2 + ody**2 < 144:
+							m = mag(odx, ody)
+							zombie.pos[0] += odx/m
+							zombie.pos[1] += ody/m
+
 				dx, dy = vecSub(player.pos, zombie.pos)
-				if dx**2 + dy**2 > 144:
+				
+				if dx**2 + dy**2 < 2000 and random() > .95:
+					for part in zombie.spit(player, frame):
+						particles.append(part)
+
+				if dx**2 + dy**2 > 200:
 					m = mag(dx, dy)
-					zombie.move(dx/m/2, dy/m/2, frame, to_avoid = static_entities, borders = SURFACE_SIZE)
+					dx, dy = dx/m/2, dy/m/2
 				else:
-					zombie.move(0, 0, frame, to_avoid = static_entities, borders = SURFACE_SIZE)
-					if random() > .9 and zombie.hit(player, frame):
-						fog_frame = frame + randint(96, 128)
-						player.show(SEFFECT, frame, blood = True)
+					dx, dy = 0, 0
+
+				zombie.move(dx, dy, frame, to_avoid = static_entities, borders = SURFACE_SIZE)
 
 				if zombie.health <= 0:
 					zombie.show(SEFFECT, frame, blood = True)
+					dropAmmo(zombie)
 					zombies.remove(zombie)
 					score += 1
 
@@ -184,18 +191,16 @@ if __name__ == "__main__":
 
 				if sheep.health <= 0:
 					sheep.show(SEFFECT, frame, blood = True)
+					dropAmmo(sheep)
 					sheeps.remove(sheep)
-					for i in range(randint(3, 6)):
-						shpx, shpy = sheep.intPos()
-						ammo.append(Entity([shpx + random()*16, shpy + random()*16], img_bank[f'ammo{randint(1, 3)}'], None, None, 4))
 
 
 			for a in ammo:
 				dx, dy = vecSub(player.getCenter(player.ground_hitbox), a.pos)
 				if dx**2 + dy**2 < 144:
 					ammo.remove(a)
-					player.ammo[0] += randint(1, 4)
-					if random() > .9:
+					player.ammo[0] += randint(0, 1)
+					if random() > .98:
 						player.ammo[1] += 1
 
 
@@ -215,78 +220,77 @@ if __name__ == "__main__":
 
 			if click:
 				if click == 2:
-					explosive = True
+					magic = True
+					if player.ammo[1]:
+						px, py = player.intPos()
+						SEFFECT.set_at([randint(px+10, px+20), randint(py+10, py+20)], [192, 255, 255, 255])
 				if mouse_drag is None:
 					mouse_drag = mouse_pos
 				else:
-					fake_bullet = player.shoot(vecSub(mouse_pos, mouse_drag), frame, no_latence = True)
-					if fake_bullet is not None:
-						traj = fake_bullet.getTraject(SURFACE_SIZE)
+					fake_arrow = player.shoot(vecSub(mouse_pos, mouse_drag), 'magic' if magic and player.ammo[1] else 'arrow')
+					if fake_arrow is not None:
+						traj = fake_arrow.getTraject(SURFACE_SIZE, [*zombies, *sheeps], static_entities)
 			else:
 				traj = None
-				if mouse_drag not in (None, (0, 0)) and (b:=player.shoot(vecSub(mouse_pos, mouse_drag), frame)) is not None:
-					if explosive and player.ammo[1]:
-						b.explosive = True
-						player.ammo[1] -= 1
-						player.ammo[0] += 1
+				if mouse_drag is not None:
+					sight = vecSub(mouse_pos, mouse_drag)
+					if sight != (0, 0):						
+						if magic and player.ammo[1]:
+							player.ammo[1] -= 1
+							particles.append(player.shoot(sight, 'magic'))
 
-					if player.ammo[0]:
-						bullets.append(b)
-						player.ammo[0] -= 1
-					else:
-						px, py = player.getCenter(player.bullet_hitbox, to_int = True)
-						mx, my = vecSub(mouse_pos, mouse_drag)
-						pg.draw.line(SEFFECT, [255]*4, [px, py], [px+mx//SCALE, py+my//SCALE])
+						elif player.ammo[0]:
+							player.ammo[0] -= 1
+							particles.append(player.shoot(sight, 'arrow'))
+
+						else:
+							px, py = player.getCenter(player.bullet_hitbox, to_int = True)
+							mx, my = sight
+							pg.draw.line(SEFFECT, [255]*4, [px, py], [px+mx//SCALE, py+my//SCALE])
 						
 				mouse_drag = None
-				explosive = False
+				magic = False
 				
 
-			for bullet in bullets:
-				bullet.move(SURFACE_SIZE)
-				if bullet.explosive:
-					bullet.show(SEFFECT, color = [192, 255, 255])
-				else:
-					bullet.show(SEFFECT, color = [255, 255, 192])
-
-				for zombie in zombies:
-					if bullet.collide(zombie):
-						zombie.health -= sum(v**2/10 for v in bullet.vel)
-						if bullet.explosive:
-							explosion(bullet.pos, zombie, frame)
-							zombie.health = 0
-							bullet.vel = [0, 0]
-						else:
-							bullet.vel = [v*.8 for v in bullet.vel]
-						for i in range(randint(2, 5)):
-							blood_particles.append(Particle(bullet.intPos(), [v+random()*2-1 for v in bullet.vel], slow = .85, dead_vel = .4))
-
-				for sheep in sheeps:
-					if bullet.collide(sheep):
-						sheep.health -= sum(v**2/10 for v in bullet.vel)
-						if bullet.explosive:
-							explosion(bullet.pos, sheep, frame)
-							sheep.health = 0
-							bullet.vel = [0, 0]
-						else:
-							bullet.vel = [v*.8 for v in bullet.vel]
-						for i in range(randint(2, 5)):
-							blood_particles.append(Particle(bullet.intPos(), [v+random()*2-1 for v in bullet.vel], slow = .85, dead_vel = .4))
+			for part in particles:
+				part.move(SURFACE_SIZE, [*zombies, *sheeps], static_entities)
 
 				for entity in static_entities:
-					if bullet.collide(entity):
-						bullet.vel = [0, 0]
+					if part.collide(entity):
+						part.vel = [0, 0]
 
-				if bullet.dead():
-					bullets.remove(bullet)
+				colors = {
+					'arrow': [255, 255, 192, 255],
+					'magic': [192, 255, 255, 255],
+					'blood': [randint(192, 255), randint(0, 96), randint(0, 96), 255],
+					'spit': [randint(64, 96), randint(128, 156), randint(96, 128), 255],
+				}
+				part.show(SEFFECT, color = colors[part.type])
+
+				if part.type in ('arrow', 'magic'):
+					for entity in [*zombies, *sheeps]:
+						if part.collide(entity):
+							for i in range(randint(2, 5)):
+								particles.append(Particle(part.intPos(), [v+random()*2-1 for v in part.vel], _type = 'blood'))
+
+							if part.type == 'arrow':
+								part.vel = [v*.5 for v in part.vel]
+								entity.health -= sum(v**2 for v in part.vel)
+							else:
+								entity.health = 0
+								break
+
+				if part.type == 'spit':
+					if part.collide(player):
+						player.health -= 1
+						player.show(SEFFECT, frame, blood = True)
+						fog_frame = frame + randint(96, 128)
+						part.vel = [0, 0]
 
 
-			for part in blood_particles:
-				part.move(SURFACE_SIZE)
-				part.show(SEFFECT, color = [randint(192, 255), 0, 0, randint(64, 255)])
-				
 				if part.dead():
-					blood_particles.remove(part)
+					particles.remove(part)
+
 
 			# graphics
 			SURFACE.blit(img_bank['ground'], [0, 0])
